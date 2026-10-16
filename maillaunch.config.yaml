@@ -1,0 +1,17 @@
+# Replace these placeholders with your OAuth app client IDs. Never put a client secret here.
+provider: gmail
+daily_limit: 100
+state_dir: ~/.maillaunch
+
+gmail:
+  client_id: "your-desktop-oauth-client-id.apps.googleusercontent.com"
+
+microsoft:
+  client_id: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  authority: "https://login.microsoftonline.com/common"
+
+send:
+  min_delay_seconds: 60
+  max_delay_seconds: 180
+  retry_failed: true
+  retry_attempts: 2
