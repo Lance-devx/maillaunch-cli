@@ -6,7 +6,7 @@ import { openDb, createCampaign } from './db.js';
 import { parseRecipients } from './csv.js';
 import { renderTemplate } from './template.js';
 import { authGmail, authMicrosoft } from './auth.js';
-import { runCampaign, getResumable, latestCampaign, todayCount } from './campaign.js';
+import { runCampaign, getDueScheduled, getResumable, latestCampaign, todayCount } from './campaign.js';
 import { readTodayLog } from './log.js';
 
 const program = new Command();
@@ -21,6 +21,12 @@ function campaignId() {
   const now = new Date();
   const ymd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
   return `c_${ymd}_${Math.random().toString(36).slice(2, 8)}`;
+}
+function scheduledTime(value) {
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) throw new Error('--schedule-at must be an ISO 8601 date-time with a timezone, such as 2026-10-16T18:00:00+08:00.');
+  const time = new Date(value);
+  if (!Number.isFinite(time.getTime()) || time <= new Date()) throw new Error('--schedule-at must be a valid future date-time.');
+  return time.toISOString();
 }
 function dbFor(settings) { return openDb(settings.state_dir); }
 async function runWithInterrupt(db, campaign, settings) {
@@ -46,11 +52,13 @@ program.command('send').description('Start a send campaign')
   .option('--provider <provider>', 'gmail or microsoft')
   .option('--min-delay <seconds>', 'minimum delay between sends', Number)
   .option('--max-delay <seconds>', 'maximum delay between sends', Number)
+  .option('--schedule-at <datetime>', 'schedule campaign start time (ISO 8601 with timezone)')
   .action(async (options) => {
     const settings = config();
     const provider = providerName(options.provider ?? settings.provider);
     const minDelay = options.minDelay ?? settings.send.min_delay_seconds;
     const maxDelay = options.maxDelay ?? settings.send.max_delay_seconds;
+    const scheduleAt = options.scheduleAt ? scheduledTime(options.scheduleAt) : null;
     if (!Number.isInteger(minDelay) || !Number.isInteger(maxDelay) || minDelay < 0 || maxDelay < minDelay) throw new Error('Delay values must be nonnegative integers, with max-delay >= min-delay.');
     const db = dbFor(settings);
     try {
@@ -59,10 +67,15 @@ program.command('send').description('Start a send campaign')
       const body = fs.readFileSync(options.bodyFile, 'utf8');
       const campaign = {
         id: campaignId(), provider, createdAt: new Date().toISOString(),
-        settings: { dailyLimit: settings.daily_limit, minDelay, maxDelay, retryAttempts: settings.send.retry_failed ? settings.send.retry_attempts : 0 },
+        settings: { dailyLimit: settings.daily_limit, minDelay, maxDelay, retryAttempts: settings.send.retry_failed ? settings.send.retry_attempts : 0, scheduleAt },
         recipients: recipients.map((recipient) => ({ ...recipient, subject: renderTemplate(options.subject, recipient.data), body: renderTemplate(body, recipient.data) }))
       };
       createCampaign(db, campaign);
+      if (scheduleAt) {
+        console.log(`Campaign scheduled for ${scheduleAt}.`);
+        console.log(`Campaign ID: ${campaign.id}`);
+        return;
+      }
       commandResult(await runWithInterrupt(db, campaign, settings));
       console.log(`Campaign ID: ${campaign.id}`);
     } finally { db.close(); }
@@ -72,10 +85,10 @@ program.command('status').description("Show today's send count and latest queue 
   const settings = config();
   const db = dbFor(settings);
   try {
-    console.log(`Today: Gmail ${todayCount(db, 'gmail')} / ${settings.daily_limit}; Microsoft ${todayCount(db, 'microsoft')} / ${settings.daily_limit}`);
+    console.log(`Today: ${todayCount(db)} / ${settings.daily_limit}`);
     const campaign = latestCampaign(db);
     if (!campaign) console.log('No campaigns yet.');
-    else console.log(`${campaign.id} — ${campaign.status}; ${Object.entries(campaign.counts).map(([status, count]) => `${status}: ${count}`).join(', ') || 'empty queue'}`);
+    else console.log(`${campaign.id} — ${campaign.status}${campaign.settings.scheduleAt ? ` for ${campaign.settings.scheduleAt}` : ''}; ${Object.entries(campaign.counts).map(([status, count]) => `${status}: ${count}`).join(', ') || 'empty queue'}`);
   } finally { db.close(); }
 });
 
@@ -87,6 +100,26 @@ program.command('resume').description('Resume the most recent interrupted campai
     if (!campaign) throw new Error('No interrupted campaign to resume.');
     commandResult(await runWithInterrupt(db, campaign, settings));
     console.log(`Campaign ID: ${campaign.id}`);
+  } finally { db.close(); }
+});
+
+program.command('run-scheduled').description('Run scheduled campaigns whose start time has arrived').action(async () => {
+  const settings = config();
+  let db;
+  try { db = dbFor(settings); }
+  catch (error) {
+    if (error.message === 'Another MailLaunch process is using the local state directory.') { console.log('MailLaunch is already running; skipping this scheduler tick.'); return; }
+    throw error;
+  }
+  try {
+    const campaigns = getDueScheduled(db);
+    if (!campaigns.length) { console.log('No scheduled campaigns are due.'); return; }
+    for (const campaign of campaigns) {
+      console.log(`Starting scheduled campaign ${campaign.id}.`);
+      const result = await runWithInterrupt(db, campaign, settings);
+      commandResult(result);
+      if (result === 'paused') break;
+    }
   } finally { db.close(); }
 });
 

@@ -48,11 +48,23 @@ maillaunch send \
 maillaunch status
 maillaunch resume
 maillaunch log
+maillaunch run-scheduled
 ```
 
 The CSV must have a header whose name contains `email` or `mail` (case-insensitive). Any CSV column can be used in `{{variable}}` templates. Missing values render as empty strings. The body file is sent as plain text.
 
-Defaults live in `maillaunch.config.yaml`; use `--config <path>` before or after a command to select another YAML file. The example sets a 100-message daily limit, 60–180 second delays, and two retry attempts. The limit counts successful sends per provider across campaigns on this computer, using the computer's local calendar day.
+Defaults live in `maillaunch.config.yaml`; use `--config <path>` before or after a command to select another YAML file. The example sets a 100-message daily limit, 60–180 second delays, and two retry attempts. The limit counts successful sends across both providers and all campaigns on this computer, using the computer's local calendar day. Duplicate addresses within one campaign are skipped and logged as `SKIPPED`.
+
+### Schedule a campaign
+
+Add `--schedule-at` with a future ISO 8601 date-time that includes its timezone. The campaign is saved locally and does not send until `run-scheduled` is invoked after that time:
+
+```sh
+maillaunch send --provider gmail --csv recipients.csv --subject "Hi {{name}}" --body-file template.txt --schedule-at "2026-10-17T09:00:00+08:00"
+maillaunch run-scheduled
+```
+
+To start it automatically, configure the operating system scheduler to run `node /path/to/maillaunch/src/main.js --config /path/to/maillaunch/maillaunch.config.yaml run-scheduled` every minute. In Windows Task Scheduler, set the program to `node.exe`, the arguments to the script, `--config` path, and `run-scheduled`, and set **Start in** to the project directory. On macOS or Linux, add the command as a one-minute cron entry. Replace the example paths with the actual project and Node.js paths. If Gmail requires `MAILLAUNCH_GOOGLE_CLIENT_SECRET`, make that environment variable available to the scheduled process too; never put the secret in the config file. The scheduler launches due campaigns without keeping a browser open. Concurrent scheduler ticks safely skip while MailLaunch is already running. A campaign remains saved if the computer is off; it starts on the next scheduler tick after the scheduled time.
 
 ## Data and test cleanup
 

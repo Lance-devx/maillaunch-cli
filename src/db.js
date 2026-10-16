@@ -85,7 +85,7 @@ export function openDb(stateDir) {
 export function createCampaign(db, campaign) {
   const save = db.transaction(() => {
     db.prepare('INSERT INTO campaigns (id, provider, created_at, status, settings_json) VALUES (?, ?, ?, ?, ?)')
-      .run(campaign.id, campaign.provider, campaign.createdAt, 'paused', JSON.stringify(campaign.settings));
+      .run(campaign.id, campaign.provider, campaign.createdAt, campaign.settings.scheduleAt ? 'scheduled' : 'paused', JSON.stringify(campaign.settings));
     const insert = db.prepare('INSERT INTO recipients (campaign_id, row_index, email, name, data_json, subject, body) VALUES (?, ?, ?, ?, ?, ?, ?)');
     campaign.recipients.forEach((recipient, index) => insert.run(campaign.id, index, recipient.email, recipient.name, JSON.stringify(recipient.data), recipient.subject, recipient.body));
   });
@@ -103,7 +103,7 @@ export function localDayBounds(now = new Date()) {
   return [start.toISOString(), end.toISOString()];
 }
 
-export function sentToday(db, provider, now = new Date()) {
+export function sentToday(db, now = new Date()) {
   const [start, end] = localDayBounds(now);
-  return db.prepare('SELECT count(*) AS count FROM recipients r JOIN campaigns c ON c.id = r.campaign_id WHERE c.provider = ? AND r.status = ? AND r.sent_at >= ? AND r.sent_at < ?').get(provider, 'sent', start, end).count;
+  return db.prepare('SELECT count(*) AS count FROM recipients WHERE status = ? AND sent_at >= ? AND sent_at < ?').get('sent', start, end).count;
 }

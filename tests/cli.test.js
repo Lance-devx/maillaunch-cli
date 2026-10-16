@@ -11,5 +11,5 @@ test('CLI loads config passed after the command', (t) => {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const result = spawnSync(process.execPath, ['src/main.js', 'status', '--config', config], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Today: Gmail 0 \/ 100; Microsoft 0 \/ 100/);
+  assert.match(result.stdout, /Today: 0 \/ 100/);
 });

@@ -16,11 +16,22 @@ export async function runCampaign(db, campaign, config, { send = sendMessage, ge
     writeLog(stateDir, { status: 'FAILED', email: recipient.email, name: recipient.name, campaignId: campaign.id, error });
   }
 
+  const seenEmails = new Set();
+  for (const recipient of db.prepare('SELECT * FROM recipients WHERE campaign_id = ? ORDER BY row_index').all(campaign.id)) {
+    const email = recipient.email.trim().toLowerCase();
+    if (seenEmails.has(email) && recipient.status === 'queued') {
+      const reason = 'Duplicate recipient address in this campaign.';
+      db.prepare("UPDATE recipients SET status = 'skipped', error = ? WHERE id = ?").run(reason, recipient.id);
+      writeLog(stateDir, { status: 'SKIPPED', email: recipient.email, name: recipient.name, campaignId: campaign.id, reason });
+    }
+    seenEmails.add(email);
+  }
+
   let accessToken;
   const queued = () => db.prepare("SELECT * FROM recipients WHERE campaign_id = ? AND status = 'queued' ORDER BY row_index").all(campaign.id);
   for (const recipient of queued()) {
     if (signal?.aborted) { db.prepare("UPDATE campaigns SET status = 'paused' WHERE id = ?").run(campaign.id); return 'paused'; }
-    if (sentToday(db, campaign.provider) >= campaign.settings.dailyLimit) {
+    if (sentToday(db) >= campaign.settings.dailyLimit) {
       writeLog(stateDir, { status: 'LIMIT_REACHED', email: recipient.email, name: recipient.name, campaignId: campaign.id });
       db.prepare("UPDATE campaigns SET status = 'paused' WHERE id = ?").run(campaign.id);
       return 'paused';
@@ -113,13 +124,19 @@ export function latestCampaign(db) {
   const row = db.prepare('SELECT * FROM campaigns ORDER BY created_at DESC LIMIT 1').get();
   if (!row) return null;
   const counts = Object.fromEntries(db.prepare('SELECT status, count(*) AS count FROM recipients WHERE campaign_id = ? GROUP BY status').all(row.id).map((item) => [item.status, item.count]));
-  return { ...row, counts };
+  return { ...row, settings: JSON.parse(row.settings_json), counts };
 }
 
 export function getResumable(db) {
   return findResumable(db);
 }
 
-export function todayCount(db, provider) {
-  return sentToday(db, provider);
+export function getDueScheduled(db, now = new Date()) {
+  return db.prepare("SELECT * FROM campaigns WHERE status = 'scheduled' ORDER BY created_at").all()
+    .map((campaign) => ({ ...campaign, settings: JSON.parse(campaign.settings_json) }))
+    .filter((campaign) => Date.parse(campaign.settings.scheduleAt) <= now.getTime());
+}
+
+export function todayCount(db) {
+  return sentToday(db);
 }
