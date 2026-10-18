@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { Command } from 'commander';
 import { loadConfig } from './config.js';
 import { openDb, createCampaign } from './db.js';
@@ -28,6 +29,13 @@ function scheduledTime(value) {
   if (!Number.isFinite(time.getTime()) || time <= new Date()) throw new Error('--schedule-at must be a valid future date-time.');
   return time.toISOString();
 }
+async function promptScheduledTime() {
+  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const value = await terminal.question('Schedule date and time (ISO 8601 with timezone, e.g. YYYY-MM-DDTHH:mm:ss+08:00): ');
+    return scheduledTime(value.trim());
+  } finally { terminal.close(); }
+}
 function dbFor(settings) { return openDb(settings.state_dir); }
 async function runWithInterrupt(db, campaign, settings) {
   const controller = new AbortController();
@@ -52,13 +60,15 @@ program.command('send').description('Start a send campaign')
   .option('--provider <provider>', 'gmail or microsoft')
   .option('--min-delay <seconds>', 'minimum delay between sends', Number)
   .option('--max-delay <seconds>', 'maximum delay between sends', Number)
+  .option('--schedule', 'prompt for campaign start date and time')
   .option('--schedule-at <datetime>', 'schedule campaign start time (ISO 8601 with timezone)')
   .action(async (options) => {
     const settings = config();
     const provider = providerName(options.provider ?? settings.provider);
     const minDelay = options.minDelay ?? settings.send.min_delay_seconds;
     const maxDelay = options.maxDelay ?? settings.send.max_delay_seconds;
-    const scheduleAt = options.scheduleAt ? scheduledTime(options.scheduleAt) : null;
+    if (options.schedule && options.scheduleAt) throw new Error('Use either --schedule or --schedule-at, not both.');
+    const scheduleAt = options.scheduleAt ? scheduledTime(options.scheduleAt) : options.schedule ? await promptScheduledTime() : null;
     if (!Number.isInteger(minDelay) || !Number.isInteger(maxDelay) || minDelay < 0 || maxDelay < minDelay) throw new Error('Delay values must be nonnegative integers, with max-delay >= min-delay.');
     const db = dbFor(settings);
     try {

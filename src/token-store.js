@@ -4,6 +4,10 @@ import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import { Entry } from '@napi-rs/keyring';
 
 const keyEntry = new Entry('maillaunch', 'token-encryption-key', { linux: { store: 'secret-service' } });
+function credentialEntry(name) { return new Entry('maillaunch', name, { linux: { store: 'secret-service' } }); }
+
+export function readCredential(name) { return credentialEntry(name).getPassword(); }
+export function writeCredential(name, value) { credentialEntry(name).setPassword(value); }
 
 function encryptionKey(create = true) {
   let value = keyEntry.getPassword();

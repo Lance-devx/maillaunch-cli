@@ -2,10 +2,11 @@ import { createServer } from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
 import open from 'open';
 import * as msal from '@azure/msal-node';
-import { readSecret, writeSecret } from './token-store.js';
+import { readCredential, readSecret, writeCredential, writeSecret } from './token-store.js';
 
 const gmailScope = 'https://www.googleapis.com/auth/gmail.send';
 const microsoftScopes = ['Mail.Send'];
+const noGoogleClientSecret = '__maillaunch_no_google_client_secret__';
 
 function pkce() {
   const verifier = randomBytes(32).toString('base64url');
@@ -49,21 +50,76 @@ async function postToken(body) {
   return result;
 }
 
-function googleClientSecret() {
-  return process.env.MAILLAUNCH_GOOGLE_CLIENT_SECRET ? { client_secret: process.env.MAILLAUNCH_GOOGLE_CLIENT_SECRET } : {};
+async function googleClientSecret(tokens = {}) {
+  const fromEnvironment = process.env.MAILLAUNCH_GOOGLE_CLIENT_SECRET;
+  if (fromEnvironment) return fromEnvironment;
+  const savedSecret = readCredential('gmail-client-secret');
+  if (savedSecret && savedSecret !== noGoogleClientSecret) return savedSecret;
+  if (tokens.client_secret) return tokens.client_secret;
+  if (savedSecret === noGoogleClientSecret) return null;
+  if (!process.stdin.isTTY) throw new Error('Google client secret is missing. Run this command in a terminal or set MAILLAUNCH_GOOGLE_CLIENT_SECRET.');
+
+  return promptGoogleClientSecret();
+}
+function saveGoogleClientSecret(secret) {
+  const value = secret || noGoogleClientSecret;
+  if (readCredential('gmail-client-secret') !== value) writeCredential('gmail-client-secret', value);
+}
+function promptGoogleClientSecret() {
+  const input = process.stdin;
+  const output = process.stdout;
+  const wasRaw = input.isRaw;
+  return new Promise((resolve, reject) => {
+    let value = '';
+    const cleanup = () => {
+      input.off('data', onData);
+      input.setRawMode(wasRaw);
+      if (!wasRaw) input.pause();
+    };
+    const onData = (chunk) => {
+      const characters = chunk.toString('utf8').replace(/\x1b\[200~|\x1b\[201~/g, '');
+      for (const character of characters) {
+        if (character === '\u0003') {
+          cleanup();
+          output.write('\n');
+          reject(new Error('Google client secret entry canceled.'));
+          return;
+        }
+        if (character === '\r' || character === '\n') {
+          cleanup();
+          output.write('\n');
+          resolve(value);
+          return;
+        }
+        if (character === '\u007f' || character === '\b') {
+          value = Array.from(value).slice(0, -1).join('');
+        } else if (character >= ' ' && character !== '\u007f' && character !== '\u001b') {
+          value += character;
+        }
+      }
+    };
+
+    output.write('Google OAuth client secret (input hidden; press Enter if not required): ');
+    input.setRawMode(true);
+    input.resume();
+    input.on('data', onData);
+  });
 }
 
 export async function authGmail(config) {
   const clientId = config.gmail?.client_id;
   if (!clientId) throw new Error('Set gmail.client_id in maillaunch.config.yaml first.');
+  const tokens = readSecret(config.state_dir, 'gmail-token') ?? {};
+  const clientSecret = await googleClientSecret(tokens);
   const flow = await listenForCode('gmail');
   try {
     const { verifier, challenge } = pkce();
     const query = new URLSearchParams({ client_id: clientId, redirect_uri: flow.redirectUri, response_type: 'code', scope: gmailScope, access_type: 'offline', prompt: 'consent', state: flow.state, code_challenge: challenge, code_challenge_method: 'S256' });
     await openLogin(`https://accounts.google.com/o/oauth2/v2/auth?${query}`);
     const authorizationCode = await flow.code;
-    const result = await postToken({ client_id: clientId, ...googleClientSecret(), code: authorizationCode, redirect_uri: flow.redirectUri, grant_type: 'authorization_code', code_verifier: verifier });
+    const result = await postToken({ client_id: clientId, ...(clientSecret ? { client_secret: clientSecret } : {}), code: authorizationCode, redirect_uri: flow.redirectUri, grant_type: 'authorization_code', code_verifier: verifier });
     if (!result.refresh_token) throw new Error('Google returned no refresh token. Revoke MailLaunch access for this account and run auth again.');
+    saveGoogleClientSecret(clientSecret);
     writeSecret(config.state_dir, 'gmail-token', { refresh_token: result.refresh_token });
     console.log('Gmail authorization saved to encrypted local storage.');
   } finally { flow.close(); }
@@ -97,7 +153,10 @@ export async function googleAccessToken(config) {
   if (!tokens?.refresh_token) throw new Error('Gmail is not authorized. Run: maillaunch auth gmail');
   const clientId = config.gmail?.client_id;
   if (!clientId) throw new Error('Set gmail.client_id in maillaunch.config.yaml first.');
-  const result = await postToken({ client_id: clientId, ...googleClientSecret(), refresh_token: tokens.refresh_token, grant_type: 'refresh_token' });
+  const clientSecret = await googleClientSecret(tokens);
+  const result = await postToken({ client_id: clientId, ...(clientSecret ? { client_secret: clientSecret } : {}), refresh_token: tokens.refresh_token, grant_type: 'refresh_token' });
+  saveGoogleClientSecret(clientSecret);
+  if (tokens.client_secret) writeSecret(config.state_dir, 'gmail-token', { refresh_token: tokens.refresh_token });
   return result.access_token;
 }
 

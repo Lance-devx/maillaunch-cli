@@ -5,7 +5,8 @@ import path from 'node:path';
 import { parseRecipients } from '../src/csv.js';
 import { renderTemplate } from '../src/template.js';
 import { openDb, createCampaign } from '../src/db.js';
-import { runCampaign } from '../src/campaign.js';
+import { runCampaign, getResumable, getDueScheduled } from '../src/campaign.js';
+import { writeLog, readTodayLog } from '../src/log.js';
 import { gmailRaw, sendMessage } from '../src/providers.js';
 
 test('CSV parsing handles BOM, quoted commas, and empty rows', () => {
@@ -125,4 +126,48 @@ test('abort during 401 resend pauses and marks the recipient uncertain', async (
   const recipient = db.prepare('SELECT status, error FROM recipients LIMIT 1').get();
   assert.equal(recipient.status, 'failed');
   assert.match(recipient.error, /outcome is unknown/);
+});
+
+test('resume sends only queued recipients and leaves sent recipients untouched', async (t) => {
+  const { db, campaign, config } = fixture(t, ['already@example.com', 'queued@example.com']);
+  const recipients = db.prepare('SELECT id FROM recipients WHERE campaign_id = ? ORDER BY row_index').all(campaign.id);
+  db.prepare("UPDATE recipients SET status = 'sent', sent_at = ? WHERE id = ?").run(new Date().toISOString(), recipients[0].id);
+  const resumable = getResumable(db);
+  const sentEmails = [];
+  const result = await runCampaign(db, resumable, config, {
+    getToken: async () => 'token',
+    send: async (_provider, _token, message) => sentEmails.push(message.email),
+    wait: async () => {}
+  });
+  assert.equal(result, 'complete');
+  assert.deepEqual(sentEmails, ['queued@example.com']);
+});
+
+test('scheduled campaigns are due only at or after their scheduled time', (t) => {
+  const stateDir = fs.mkdtempSync(path.join(process.cwd(), 'tests', '.tmp-'));
+  const db = openDb(stateDir);
+  t.after(() => { db.close(); fs.rmSync(stateDir, { recursive: true, force: true }); });
+  const now = new Date('2026-10-18T12:00:00.000Z');
+  for (const [id, scheduleAt] of [['due', '2026-10-18T12:00:00.000Z'], ['later', '2026-10-18T12:01:00.000Z']]) {
+    createCampaign(db, {
+      id, provider: 'gmail', createdAt: now.toISOString(),
+      settings: { dailyLimit: 100, minDelay: 0, maxDelay: 0, retryAttempts: 0, scheduleAt },
+      recipients: []
+    });
+  }
+  assert.deepEqual(getDueScheduled(db, now).map((campaign) => campaign.id), ['due']);
+});
+
+test('log entries are JSON Lines with timestamp and campaign event fields', (t) => {
+  const stateDir = fs.mkdtempSync(path.join(process.cwd(), 'tests', '.tmp-'));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  writeLog(stateDir, { status: 'SENT', email: 'ada@example.com', name: 'Ada', campaignId: 'c_test' });
+  const lines = readTodayLog(stateDir).trim().split('\n');
+  assert.equal(lines.length, 1);
+  const entry = JSON.parse(lines[0]);
+  assert.equal(Number.isNaN(Date.parse(entry.timestamp)), false);
+  assert.equal(entry.status, 'SENT');
+  assert.equal(entry.email, 'ada@example.com');
+  assert.equal(entry.name, 'Ada');
+  assert.equal(entry.campaignId, 'c_test');
 });
