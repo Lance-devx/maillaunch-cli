@@ -26,8 +26,8 @@ export class ProviderError extends Error {
   }
 }
 
-async function request(url, options, provider) {
-  const response = await fetch(url, options);
+async function request(url, options, provider, signal) {
+  const response = await fetch(url, {...options, signal});
   if (!response.ok) {
     const text = await response.text();
     let message = text;
@@ -38,16 +38,16 @@ async function request(url, options, provider) {
   return response;
 }
 
-export async function sendMessage(provider, accessToken, message) {
+export async function sendMessage(provider, accessToken, message, { signal } = {}) {
   if (provider === 'gmail') {
     await request('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
       method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ raw: gmailRaw(message) })
-    }, provider);
+    }, provider, signal);
     return;
   }
   await request('https://graph.microsoft.com/v1.0/me/sendMail', {
     method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ message: { subject: message.subject, body: { contentType: 'Text', content: message.body }, toRecipients: [{ emailAddress: { address: message.email } }] } })
-  }, provider);
+  }, provider, signal);
 }

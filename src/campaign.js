@@ -6,7 +6,7 @@ import { googleAccessToken, microsoftAccessToken } from './auth.js';
 
 const tokenFor = (provider, config, forceRefresh = false) => provider === 'gmail' ? googleAccessToken(config) : microsoftAccessToken(config, forceRefresh);
 
-export async function runCampaign(db, campaign, config, { send = sendMessage, getToken = tokenFor, wait = delay, signal } = {}) {
+export async function runCampaign(db, campaign, config, { send = (provider, token, message, options) => sendMessage(provider, token, message, options), getToken = tokenFor, wait = delay, signal } = {}) {
   const stateDir = config.state_dir;
   db.prepare("UPDATE campaigns SET status = 'running' WHERE id = ?").run(campaign.id);
   const interrupted = db.prepare("SELECT * FROM recipients WHERE campaign_id = ? AND status = 'sending'").all(campaign.id);
@@ -47,9 +47,16 @@ export async function runCampaign(db, campaign, config, { send = sendMessage, ge
       db.prepare("UPDATE recipients SET status = 'sending', attempts = ?, error = NULL WHERE id = ?").run(attempt, recipient.id);
       try {
         accessToken ??= await getToken(campaign.provider, config);
-        await send(campaign.provider, accessToken, { email: recipient.email, subject: recipient.subject, body: recipient.body });
+        await send(campaign.provider, accessToken, { email: recipient.email, subject: recipient.subject, body: recipient.body }, { signal });
         sent = true;
       } catch (error) {
+        if (error.name === 'AbortError' || signal?.aborted) {
+          const message = 'Send interrupted; outcome is unknown. Verify with the provider before manually retrying.';
+          db.prepare("UPDATE recipients SET status = 'failed', error = ? WHERE id = ?").run(message, recipient.id);
+          writeLog(stateDir, { status: 'FAILED', email: recipient.email, name: recipient.name, campaignId: campaign.id, error: message });
+          db.prepare("UPDATE campaigns SET status = 'paused' WHERE id = ?").run(campaign.id);
+          return 'paused';
+        }
         if (error.status === 401) {
           try {
             accessToken = await getToken(campaign.provider, config, true);
@@ -61,9 +68,16 @@ export async function runCampaign(db, campaign, config, { send = sendMessage, ge
             return finalError.message;
           }
           try {
-            await send(campaign.provider, accessToken, { email: recipient.email, subject: recipient.subject, body: recipient.body });
+            await send(campaign.provider, accessToken, { email: recipient.email, subject: recipient.subject, body: recipient.body }, { signal });
             sent = true;
           } catch (refreshedError) {
+            if (refreshedError.name === 'AbortError' || signal?.aborted) {
+              const message = 'Send interrupted; outcome is unknown. Verify with the provider before manually retrying.';
+              db.prepare("UPDATE recipients SET status = 'failed', error = ? WHERE id = ?").run(message, recipient.id);
+              writeLog(stateDir, { status: 'FAILED', email: recipient.email, name: recipient.name, campaignId: campaign.id, error: message });
+              db.prepare("UPDATE campaigns SET status = 'paused' WHERE id = ?").run(campaign.id);
+              return 'paused';
+            }
             if (refreshedError.status === 401) {
               finalError = new Error(`Authentication expired. Run maillaunch auth ${campaign.provider} and resume the campaign. ${refreshedError.message}`);
               db.prepare("UPDATE recipients SET status = 'queued', error = ? WHERE id = ?").run(finalError.message, recipient.id);
