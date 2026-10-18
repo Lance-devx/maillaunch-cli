@@ -1,6 +1,6 @@
 # MailLaunch
 
-A local Node.js CLI for sending personalized email campaigns through Gmail or Microsoft Graph. It keeps campaign data on the computer, resumes queued recipients, applies a daily limit, and writes JSON Lines activity logs.
+A Node.js command-line tool for sending personalized campaigns through Gmail or Microsoft Graph. Campaign data stays on the computer, queued recipients can be resumed, a daily limit is enforced, and activity is recorded as JSON Lines.
 
 ## Requirements
 
@@ -10,10 +10,10 @@ A local Node.js CLI for sending personalized email campaigns through Gmail or Mi
 
 ## Setup
 
-1. Install dependencies: `npm install`
-2. Open `maillaunch.config.yaml` and enter the client ID for each provider you plan to use.
-3. Link the command locally with `npm link` (or run it with `node src/main.js`).
-4. Authorize a provider:
+1. Run `npm install` to install the dependencies.
+2. Add the client ID for each provider you plan to use to `maillaunch.config.yaml`.
+3. Run `npm link` to use `maillaunch` as a local command, or start it with `node src/main.js`.
+4. Sign in to a provider:
 
    ```sh
    maillaunch auth gmail
@@ -22,15 +22,15 @@ A local Node.js CLI for sending personalized email campaigns through Gmail or Mi
 
 ### Gmail OAuth app
 
-Create a Google Cloud project, enable the Gmail API, configure the OAuth consent screen, and create an OAuth client with the **Desktop app** application type. For testing, add the Google account you will use as a test user. Copy its client ID into `gmail.client_id` in the config file. If Google requires the desktop client's client secret during token exchange, provide it only in the environment variable `MAILLAUNCH_GOOGLE_CLIENT_SECRET`; never put it in the YAML file.
+Create a Google Cloud project, enable the Gmail API, configure the OAuth consent screen, and create an OAuth client using the **Desktop app** type. If the app is in testing, add the account you will use as a test user. Put the client ID in `gmail.client_id`. If Google requires the desktop client's secret during token exchange, set `MAILLAUNCH_GOOGLE_CLIENT_SECRET` in the environment. Do not put the secret in the YAML file.
 
-The CLI requests only the `gmail.send` permission and uses the local browser authorization-code flow with PKCE. Google may show an unverified-app warning while the OAuth app is in testing. The test account must be listed as a test user.
+The CLI requests the `gmail.send` permission and uses a local browser authorization-code flow with PKCE. Google may show an unverified-app warning while the OAuth app is in testing. In that case, the account must be listed as a test user.
 
 ### Microsoft OAuth app
 
-Register a public-client app in Microsoft Entra, choose the supported account types you need, and add delegated `Mail.Send` permission. Configure a **Mobile and desktop applications** redirect URI for `http://localhost`. Copy the application client ID into `microsoft.client_id`. The default authority accepts personal Microsoft accounts and work/school accounts; use your tenant-specific authority if the app is restricted to one organization. Organization policy may require admin consent.
+Register a public-client app in Microsoft Entra and select the account types the app should support. Add delegated `Mail.Send` permission and configure a **Mobile and desktop applications** redirect URI for `http://localhost`. Put the application client ID in `microsoft.client_id`. The default authority accepts personal Microsoft accounts and work or school accounts. If the app is limited to one organization, use that tenant's authority. Organization policy may require admin consent.
 
-The CLI uses MSAL Node with the authorization-code flow and PKCE. It does not need a client secret.
+The CLI uses MSAL Node with the authorization-code flow and PKCE. No client secret is needed.
 
 ## Usage
 
@@ -51,26 +51,26 @@ maillaunch log
 maillaunch run-scheduled
 ```
 
-The CSV must have a header whose name contains `email` or `mail` (case-insensitive). Any CSV column can be used in `{{variable}}` templates. Missing values render as empty strings. The body file is sent as plain text.
+The CSV needs a header containing `email` or `mail` (matching is case-insensitive). Use any column in a `{{variable}}` template; missing values become empty strings. The body file is sent as plain text.
 
-Defaults live in `maillaunch.config.yaml`; use `--config <path>` before or after a command to select another YAML file. The example sets a 100-message daily limit, 60–180 second delays, and two retry attempts. The limit counts successful sends across both providers and all campaigns on this computer, using the computer's local calendar day. Duplicate addresses within one campaign are skipped and logged as `SKIPPED`.
+Defaults are read from `maillaunch.config.yaml`. Pass `--config <path>` before or after a command to use another YAML file. The example config sets a daily limit of 100 messages, delays of 60–180 seconds, and two retry attempts. The limit counts successful sends from both providers and all campaigns on this computer, based on its local calendar day. Duplicate addresses in a campaign are skipped and logged as `SKIPPED`.
 
 ### Schedule a campaign
 
-Add `--schedule-at` with a future ISO 8601 date-time that includes its timezone. The campaign is saved locally and does not send until `run-scheduled` is invoked after that time:
+Pass `--schedule-at` with a future ISO 8601 date-time that includes a timezone. MailLaunch saves the campaign locally. It starts sending after that time when you run `run-scheduled`:
 
 ```sh
 maillaunch send --provider gmail --csv recipients.csv --subject "Hi {{name}}" --body-file template.txt --schedule-at "2026-10-17T09:00:00+08:00"
 maillaunch run-scheduled
 ```
 
-To start it automatically, configure the operating system scheduler to run `node /path/to/maillaunch/src/main.js --config /path/to/maillaunch/maillaunch.config.yaml run-scheduled` every minute. In Windows Task Scheduler, set the program to `node.exe`, the arguments to the script, `--config` path, and `run-scheduled`, and set **Start in** to the project directory. On macOS or Linux, add the command as a one-minute cron entry. Replace the example paths with the actual project and Node.js paths. If Gmail requires `MAILLAUNCH_GOOGLE_CLIENT_SECRET`, make that environment variable available to the scheduled process too; never put the secret in the config file. The scheduler launches due campaigns without keeping a browser open. Concurrent scheduler ticks safely skip while MailLaunch is already running. A campaign remains saved if the computer is off; it starts on the next scheduler tick after the scheduled time.
+To start scheduled campaigns automatically, configure your operating system to run `node /path/to/maillaunch/src/main.js --config /path/to/maillaunch/maillaunch.config.yaml run-scheduled` once a minute. In Windows Task Scheduler, choose `node.exe`, provide the script, `--config` path, and `run-scheduled` as arguments, then set **Start in** to the project directory. On macOS or Linux, add the command to cron with a one-minute interval. Replace the example paths with the paths on your computer. If Gmail requires `MAILLAUNCH_GOOGLE_CLIENT_SECRET`, make it available to the scheduled process through its environment; do not put it in the config file. Due campaigns run without an open browser. If a scheduler tick occurs while MailLaunch is already running, it skips that tick. If the computer is off at the scheduled time, the campaign starts on the first tick after the computer is back on.
 
 ## Data and test cleanup
 
-Campaign state and JSONL logs are written under `~/.maillaunch` by default. OAuth tokens are encrypted with AES-256-GCM in local files; the encryption key is held in the operating system credential store. On Linux, a Secret Service provider such as GNOME Keyring or KWallet must be running. The database contains recipient addresses and rendered messages, so keep the state directory private.
+By default, campaign state and JSONL logs are stored under `~/.maillaunch`. Local OAuth token files use AES-256-GCM encryption. The encryption key is stored in the operating system's credential store. Linux needs a running Secret Service provider, such as GNOME Keyring or KWallet. The database contains recipient addresses and rendered messages, so keep the state directory private.
 
-For test-only use, authorize a test account and send only to an address you control. After testing, revoke MailLaunch's access in the Google or Microsoft account's security settings, remove any temporary `MAILLAUNCH_GOOGLE_CLIENT_SECRET` environment variable, delete the configured state directory, and remove the `maillaunch` / `token-encryption-key` entry from the operating system credential store. OAuth client IDs in the YAML file are identifiers, not passwords; replace or remove them if you no longer need the test setup. The config file contains placeholders only.
+For a test send, authorize a test account and use an address you control. When finished, revoke MailLaunch's access in the Google or Microsoft account's security settings. Remove any temporary `MAILLAUNCH_GOOGLE_CLIENT_SECRET` environment variable, delete the configured state directory, and remove the `maillaunch` / `token-encryption-key` entry from the operating system credential store. OAuth client IDs in the YAML file identify the app; they are not passwords. Replace or remove them if you no longer need the test setup. The example config contains placeholders only.
 
 ## Tests
 
@@ -80,19 +80,19 @@ Run the mocked unit tests with:
 npm test
 ```
 
-They cover BOM/quoted/empty CSV input, email-column detection, template rendering, the daily limit, and retry backoff. They do not contact Google or Microsoft or send email.
+The tests cover BOM-prefixed and quoted CSV input, empty rows, email-column detection, template rendering, the daily limit, retry backoff, token refresh after a 401, and abort-signal forwarding to Microsoft Graph. They do not contact Google or Microsoft or send email.
 
 ## Design decisions
 
-- **Node.js:** Chosen to meet the runtime preference and use one language for the CLI, OAuth, and tests.
-- **SQLite:** `sql.js` provides SQLite without requiring native compiler tools. The local database is exported atomically after each state change. This keeps setup simple for a small local CLI.
-- **Credentials:** Public OAuth clients avoid a client secret for Microsoft; Google uses the Desktop app flow. Refresh tokens and the MSAL token cache are AES-GCM encrypted, with the encryption key kept in the OS credential store.
-- **Logs:** One JSON object per line with ISO 8601 timestamp, status, recipient, campaign ID, and optional error details.
-- **Resume safety:** Known `SENT` recipients are not resent. If the process stops while a provider request is in flight, the result may be unknown; that recipient is marked failed for manual verification rather than automatically resent.
-- **Delays and retries:** Integer-second delays are uniformly selected from the inclusive configured range. Non-auth failures use exponential backoff; an HTTP `Retry-After` value is honored when present. A 401 triggers token refresh once and pauses for re-authentication if refresh fails.
+- **Node.js:** It meets the runtime requirement and lets the CLI, OAuth flows, and tests use one language.
+- **SQLite:** `sql.js` avoids native compiler tools. MailLaunch exports the local database atomically after each state change, which keeps installation straightforward for a small CLI.
+- **Credentials:** Microsoft uses a public OAuth client, so it needs no client secret. Google uses the Desktop app flow. Refresh tokens and the MSAL token cache are encrypted with AES-GCM; the operating system credential store holds the encryption key.
+- **Logs:** Each line is a JSON object with an ISO 8601 timestamp, status, recipient, campaign ID, and error details when applicable.
+- **Resume safety:** MailLaunch does not resend recipients already marked `SENT`. If the process stops during a provider request, the delivery result may be unknown. That recipient is marked failed so it can be checked manually before anyone retries it.
+- **Delays and retries:** Delays use uniformly selected whole seconds, including both ends of the configured range. Non-authentication failures use exponential backoff, and MailLaunch honors an HTTP `Retry-After` value when provided. A 401 triggers one token refresh; if refresh fails, the campaign pauses and asks the user to authenticate again.
 
 ## Future improvements
 
-- Add a supported account chooser for multiple sender accounts per provider.
-- Add integration tests with disposable provider accounts and a mailbox-safe test campaign.
-- Use native SQLite for very large local histories instead of exporting the SQLite file after each state change.
+- Add an account chooser so users can select among multiple sender accounts for each provider.
+- Add integration tests using disposable provider accounts and a test campaign that only sends to a safe mailbox.
+- Use native SQLite for very large local histories instead of exporting the database after every state change.
